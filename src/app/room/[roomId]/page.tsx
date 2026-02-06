@@ -2,11 +2,18 @@
 
 import { useUsername } from "@/hooks/use-username";
 import { client } from "@/lib/client";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { format } from "date-fns";
+import { format, isValid } from "date-fns";
 import { useRealtime } from "@/lib/realtime-client";
+import { timeStamp } from "console";
+
+function formatMessageTime(value: any) {
+  const date = new Date(value);
+  if (!isValid(date)) return "--:--";
+  return format(date, "hh:mm a");
+}
 
 function formatTimeRemaining(seconds: number) {
   // 121 secs
@@ -26,6 +33,7 @@ const Page = () => {
   const [input, setInput] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const { username } = useUsername();
+  const queryClient = useQueryClient();
 
   const { data: ttlData } = useQuery({
     queryKey: ["ttl", roomId],
@@ -77,7 +85,40 @@ const Page = () => {
         { sender: username, text },
         { query: { roomId } },
       );
+    },
+
+    onMutate: async ({ text }) => {
+      await queryClient.cancelQueries({ queryKey: ["messages", roomId] });
+
+      const previous = queryClient.getQueryData(["messages", roomId]);
+
+      const optimisticMessages = {
+        id: "optimistics-" + Date.now(),
+        sender: username,
+        text,
+        timeStamp: new Date().toISOString(),
+        optimistics: true,
+      };
+
+      queryClient.setQueryData(["messages", roomId], (old: any) => {
+        return {
+          ...old,
+          messages: [...(old?.messages || []), optimisticMessages],
+        };
+      });
       setInput("");
+
+      return { previous };
+    },
+
+    // if api fails, rollback
+    onError: (_err, _vars, context) => {
+      queryClient.setQueryData(["messages", roomId], context?.previous);
+    },
+
+    // after success, refetch to sync real IDs
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["messages", roomId] });
     },
   });
 
@@ -86,7 +127,7 @@ const Page = () => {
     events: ["chat.message", "chat.destroy"],
     onData: ({ event }) => {
       if (event === "chat.message") {
-        refetch();
+        queryClient.invalidateQueries({ queryKey: ["messages", roomId] });
       }
 
       if (event === "chat.destroy") {
@@ -166,7 +207,7 @@ const Page = () => {
                   {msg.sender === username ? "YOU" : msg.sender}
                 </span>
                 <span className="text-[10px] text-zinc-600">
-                  {format(msg.timestamp, "hh:mm a")}
+                  {formatMessageTime(msg.timestamp)}
                 </span>
               </div>
               <p className="text-sm text-zinc-300 leading-relaxed break-all">
